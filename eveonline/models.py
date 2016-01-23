@@ -10,14 +10,14 @@ logger = logging.getLogger(__name__)
 
 class EVECharacter(models.Model):
     id = models.PositiveIntegerField(primary_key=True)
-    name = models.CharField(max_length=254)
-    corp_id = models.PositiveIntegerField(null=True)
-    corp_name = models.CharField(max_length=254, null=True)
-    alliance_id = models.PositiveIntegerField(null=True)
-    alliance_name = models.CharField(max_length=254, null=True)
-    faction_id = models.PositiveIntegerField(null=True)
-    faction_name = models.CharField(max_length=254, null=True)
-    user = models.ForeignKey('authentication.User', null=True)
+    name = models.CharField(max_length=254, blank=True)
+    corp_id = models.PositiveIntegerField(null=True, blank=True)
+    corp_name = models.CharField(max_length=254, null=True, blank=True)
+    alliance_id = models.PositiveIntegerField(null=True, blank=True)
+    alliance_name = models.CharField(max_length=254, null=True, blank=True)
+    faction_id = models.PositiveIntegerField(null=True, blank=True)
+    faction_name = models.CharField(max_length=254, null=True, blank=True)
+    user = models.ForeignKey('authentication.User', null=True, on_delete=models.SET_NULL, blank=True, related_name='characters')
     standing = GenericRelation('eveonline.EVEStanding', null=True)
     def __unicode__(self):
         if self.name:
@@ -93,11 +93,11 @@ class EVECharacter(models.Model):
 
 class EVECorporation(models.Model):
     id = models.PositiveIntegerField(primary_key=True)
-    name = models.CharField(max_length=254, null=True)
-    alliance_id = models.PositiveIntegerField(null=True)
-    alliance_name = models.CharField(max_length=254, null=True)
-    members = models.PositiveIntegerField(null=True)
-    ticker = models.CharField(max_length=254, null=True)
+    name = models.CharField(max_length=254, null=True, blank=True)
+    alliance_id = models.PositiveIntegerField(null=True, blank=True)
+    alliance_name = models.CharField(max_length=254, null=True, blank=True)
+    members = models.PositiveIntegerField(null=True, blank=True)
+    ticker = models.CharField(max_length=254, null=True, blank=True)
     standing = GenericRelation('eveonline.EVEStanding', null=True)
     def __unicode__(self):
         if self.name:
@@ -145,8 +145,8 @@ class EVECorporation(models.Model):
 
 class EVEAlliance(models.Model):
     id = models.PositiveIntegerField(primary_key=True)
-    name = models.CharField(max_length=254, null=True)
-    ticker = models.CharField(max_length=254, null=True)
+    name = models.CharField(max_length=254, null=True, blank=True)
+    ticker = models.CharField(max_length=254, null=True, blank=True)
     standing = GenericRelation('eveonline.EVEStanding', null=True)
     def __unicode__(self):
         if self.name:
@@ -181,9 +181,39 @@ class EVEApiKeyPair(models.Model):
     id = models.PositiveIntegerField(primary_key=True)
     vcode = models.CharField(max_length=254)
     owner = models.ForeignKey('authentication.User', null=True)
-    is_valid = models.NullBooleanField()
+    is_valid = models.NullBooleanField(blank=True)
+    characters = models.ManyToManyField(EVECharacter, related_name ='apis')
     def __unicode__(self):
         return 'API Key %s' % self.id
+    def update(self):
+        chars = []
+        logger.debug("Initiating update of %s" % self)
+        try:
+            api = evelink.api.API(api_key=(self.id, self.vcode))
+            account = evelink.account.Account(api=api)
+            api_chars = account.characters().result
+            for char in self.characters.all():
+                if not char.id in api_chars:
+                    logger.info("Character %s no longer found on %s" % (char, self))
+                    self.characters.remove(char)
+            for api_char_id in api_chars:
+                char, c = EVECharacter.objects.get_or_create(id=api_char_id)
+                char.update(api_chars[api_char_id])
+                if not char in self.characters.all():
+                    logger.info("Character %s discovered on %s" % (char, self))
+                    self.characters.add(char)
+            if not self.is_valid:
+                self.is_valid=True
+                self.save(update_fields=['is_valid'])
+        except evelink.api.APIError as error:
+            logger.exception("APIError occured while retrieving characters for %s" % self, exc_info=True)
+            logger.info("%s is invalid." % self)
+            if self.is_valid or self.is_valid==None:
+                self.is_valid=False
+                self.save(update_fields=['is_valid'])
+            if self.characters.all().exists():
+                self.characters.clear()
+        
 
 class EVEStanding(models.Model):
     standing = models.DecimalField(max_digits=3, decimal_places=1, null=True)

@@ -1,0 +1,95 @@
+{% extends "public/base.html" %}
+{% load staticfiles %}
+
+{% block title %}Groups{% endblock %}
+
+{% block content %}
+    <div class="col-lg-12">
+        <h1 class="page-header text-center">Groups</h1>
+        <div class="panel panel-success">
+        <div class="panel-heading">Your Groups</div>
+        <table class="table">
+            <tr>
+                <th class="text-center">Name</th>
+                <th class="text-center">Description</th>
+                <th class="text-center">Visibility</th>
+                <th class="text-center"></th>
+            </tr>
+            {% if member %}
+                {% for g in member %}
+                    <tr>
+                        <td class="text-center">{{ g.0.name }}</td>
+                        <td class="text-center">{{ g.0.description }}</td>
+                        <td class="text-center">
+                            {% if g.0.hidden %}
+                                <span class="glyphicon glyphicon-eye-close"></span>
+                            {% else %}
+                                <span class="glyphicon glyphicon-eye-open"></span>
+                            {% endif %}
+                          </td>
+                          <td class="text-right">
+                              {% if g.1 %}
+                                  <a href="{% url 'groupmanagement_group_leave' g.0.id %}">
+                                      <button type="button" class="btn btn-danger" title="Leave"><span class="glyphicon glyphicon-remove"><span></button>
+                                  </a>
+                              {% endif %}
+                          </td>
+                      </tr>
+                {% endfor %}
+            {% endif %}
+        </table>
+        </div>
+        {% if applications %}
+            <div class="panel panel-warning">
+            <div class="panel-heading">Applications</div>
+            <table class="table">
+                <tr>
+                    <th class="text-center">Date</th>
+                    <th class="text-center">Name</th>
+                    <th class="text-center">Description</th>
+                    <th class="text-center">Action</th>
+                </tr>
+                {% for a in applications %}
+                    <tr>
+                        <td class="text-center">{{ a.created }}</td>
+                        <td class="text-center">{{ a.extended_group.name }}</td>
+                        <td class="text-center">{{ a.extended_group.description }}</td>
+                        <td class="text-right">
+                            <a href="{% url 'groupmanagement_group_application_delete' a.id %}">
+                                <button type="button" class="btn btn-danger" title="Cancel"><span class="glyphicon glyphicon-remove"><span></button>
+                            </a>
+                        </td>
+                    </tr>
+                 {% endfor %}
+            </table>
+            </div>
+        {% endif %}
+        {% if available %}
+            <div class="panel panel-default">
+            <div class="panel-heading">Available Groups</div>
+            <table class="table">
+                <tr>
+                    <th class="text-center">Name</th>
+                    <th class="text-center">Description</th>
+                    <th class="text-center">Action</th>
+                </tr>
+                {% for g in available %}
+                    <tr>
+                        <td class="text-center">{{ g.name }}</td>
+                        <td class="text-center">{{ g.description }}</td>
+                        <td class="text-right">
+                            <a href="{% url 'groupmanagement_group_application_create' g.id %}">
+                            {% if g.require_application %}
+                                <button type="button" class="btn btn-warning" title="Apply"><span class="glyphicon glyphicon-plus"></span></button>
+                            {% else %}
+                                <button type="button" class="btn btn-success" title="Join"><span class="glyphicon glyphicon-ok"></span></button>
+                            {% endif %}
+                            </a>
+                        </td>
+                    </tr>
+                 {% endfor %}
+             </table>
+             </div>
+         {% endif %}
+    </div>
+{% endblock %}

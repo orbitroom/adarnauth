@@ -2,20 +2,25 @@ from django.shortcuts import render, redirect, get_object_or_404
 from authentication.models import User
 from .models import UserAccess, CharacterAccessRule, CorpAccessRule, AllianceAccessRule
 from .forms import CharacterAccessForm, CorpAccessForm, AllianceAccessForm
-from eveonline.managers import EVEManager
+from eveonline.models import EVECharacter, EVECorporation, EVEAlliance
 from django.contrib.auth.decorators import login_required, permission_required, user_passes_test
 import logging
 
 logger = logging.getLogger(__name__)
 
 @login_required
-def list_useraccess(request):
-    logger.debug("list_access called by user %s" % request.user)
-    ua = UserAccess.objects.filter(user=request.user)
-    access = request.user.has_perm('access.site_access')
-    return render(request, 'registered/access/useraccess.html', context={'useraccess':ua, 'access':access})
+@permission_required('access.site_access')
+@permission_required('access.audit_access')
+def list_useraccess(request, user_id):
+    logger.debug("list_access called by user %s for user_id %s" % (request.user, user_id))
+    user = get_object_or_404(User, pk=user_id)
+    ua = UserAccess.objects.filter(user=user)
+    access = user.has_perm('access.site_access')
+    return render(request, 'registered/access/useraccess.html', context={'useraccess':ua, 'user':user, 'access':access})
 
 @login_required
+@permission_required('access.site_access')
+@permission_required('access.manage_access')
 def list_access_rules(request):
     logger.debug("list_access_rules called by user %s" % request.user)
     characcess = CharacterAccessRule.objects.all()
@@ -37,17 +42,22 @@ def characteraccess_create(request):
         form = CharacterAccessForm(request.POST)
         logger.debug("Request type POST contains form, is valid: %s" % form.is_valid())
         if form.is_valid():
-            character = EVEManager.get_character_by_id(form.cleaned_data['id'])
+            character = EVECharacter.objects.get_by_id(form.cleaned_data['id'])
             if CharacterAccessRule.objects.filter(character=character).exists() is False:
                 ca = CharacterAccessRule(character=character)
                 logger.info("User %s creating access for %s" % (request.user, ca))
                 ca.save()
             else:
-                logger.warn("User %s attempting to duplicate access for %s" % character)
+                logger.warn("User %s attempting to duplicate access for %s" % (request.user, character))
             return redirect('access_list_access_rules')
     else:
         form = CharacterAccessForm()
-    return render(request, 'registered/access/create_form.html', context={'form': form, 'type': 'Character'})
+    context = {
+        'form': form,
+        'title': 'Create Character Access Rule',
+        'button_text': 'Create',
+    }
+    return render(request, 'public/form.html', context=context)
 
 @login_required
 @permission_required('access.site_access')
@@ -68,17 +78,22 @@ def corpaccess_create(request):
         form = CorpAccessForm(request.POST)
         logger.debug("Request type POST contains form, is valid: %s" % form.is_valid())
         if form.is_valid():
-            corp = EVEManager.get_corp_by_id(form.cleaned_data['id'])
+            corp = EVECorporation.objects.get_by_id(form.cleaned_data['id'])
             if CorpAccessRule.objects.filter(corp=corp).exists() is False:
                 ca = CorpAccessRule(corp=corp)
                 logger.info("User %s creating access for %s" % (request.user, ca))
                 ca.save()
             else:
-                logger.warn("User %s attempting to duplicate access for %s" % corp)
+                logger.warn("User %s attempting to duplicate access for %s" % (request.user, corp))
             return redirect('access_list_access_rules')
     else:
         form = CorpAccessForm()
-    return render(request, 'registered/access/create_form.html', context={'form': form, 'type': 'Corporation'})
+    context = {
+        'form': form,
+        'title': 'Create Corporation Access Rule',
+        'button_text': 'Create',
+    }
+    return render(request, 'public/form.html', context=context)
 
 @login_required
 @permission_required('access.site_access')
@@ -99,17 +114,22 @@ def allianceaccess_create(request):
         form = AllianceAccessForm(request.POST)
         logger.debug("Request type POST contains form, is valid: %s" % form.is_valid())
         if form.is_valid():
-            alliance = EVEManager.get_alliance_by_id(form.cleaned_data['id'])
+            alliance = EVEAlliance.objects.get_by_id(form.cleaned_data['id'])
             if AllianceAccessRule.objects.filter(alliance=alliance).exists() is False:
                 aa = AllianceAccessRule(alliance=alliance)
                 logger.info("User %s creating access for %s" % (request.user, aa))
                 aa.save()
             else:
-                logger.warn("User %s attempting to duplicate access for %s" % alliance)
+                logger.warn("User %s attempting to duplicate access for %s" % (request.user, alliance))
             return redirect('access_list_access_rules')
     else:
         form = AllianceAccessForm()
-    return render(request, 'registered/access/create_form.html', context={'form': form, 'type': 'Alliance'})
+    context = {
+        'form': form,
+        'title': 'Create Alliance Access Rule',
+        'button_text': 'Create',
+    }
+    return render(request, 'public/form.html', context=context)
 
 @login_required
 @permission_required('access.site_access')
@@ -156,4 +176,10 @@ def recheck_access(request, ua_id):
     logger.debug("recheck_access called by user %s for useraccess id %s" % (request.user, ua_id))
     ua = get_object_or_404(UserAccess, id=ua_id)
     ua.verify()
+    if isinstance(ua.get_rule(), CharacterAccessRule):
+        return redirect('access_view_character_access', ua.get_rule().pk)
+    elif isinstance(ua.get_rule(), CorpAccessRule):
+        return redirect('access_view_corp_access', ua.get_rule().pk)
+    elif isinstance(ua.get_rule(), AllianceAccessRule):
+        return redirect('access_view_alliance_access', ua.get_rule().pk)
     return redirect('access_list_access_rules')

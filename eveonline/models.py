@@ -5,10 +5,12 @@ import logging
 import evelink
 from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
 from django.contrib.contenttypes.models import ContentType
+from managers import EVECharacterManager, EVECorporationManager, EVEAllianceManager, EVEContactManager, EVEApiKeyPairManager
 
 logger = logging.getLogger(__name__)
 
 class EVECharacter(models.Model):
+
     id = models.PositiveIntegerField(primary_key=True)
     name = models.CharField(max_length=254, blank=True)
     corp_id = models.PositiveIntegerField(null=True, blank=True)
@@ -18,13 +20,16 @@ class EVECharacter(models.Model):
     faction_id = models.PositiveIntegerField(null=True, blank=True)
     faction_name = models.CharField(max_length=254, null=True, blank=True)
     user = models.ForeignKey('authentication.User', null=True, on_delete=models.SET_NULL, blank=True, related_name='characters')
-    standing = GenericRelation('eveonline.EVEStanding', null=True)
+
+    objects = EVECharacterManager()
+
     def __unicode__(self):
         if self.name:
             return self.name.encode('utf-8')
         else:
             logger.warn("Character name missing in character model for id %s - needs an update - returning id as __unicode__" % self.id)
             return str(self.id).encode('utf-8')
+
     def update(self, char_info=None):
         logger.debug("Initiating update for character model with id %s" % str(self.id))
         if not char_info:
@@ -86,25 +91,63 @@ class EVECharacter(models.Model):
             if self.alliance_name:
                 self.alliance_name = None
                 update_fields.append('alliance_name')
-        logger.info("Finished updating character id %s from api. Changed: %s" % (self.id, update_fields))
         if update_fields:
+            logger.info("Finished updating character id %s from api. Changed: %s" % (self.id, update_fields))
             self.save(update_fields=update_fields)
+        if self.corp_id == EVECharacterManager.DOOMHEIM_CORP_ID:
+            logger.info("%s has been biomassed. Deleting model" % self)
+            self.delete()
         return True
 
+    def get_possible_users(self):
+        from authentication.models import User
+        users = set([])
+        if User.objects.filter(main_character_id=self.id).exists():
+            logger.debug("A user account exists with main_character_id %s" % self.id)
+            users.add(User.objects.get(main_character_id=self.id))
+        for api in self.apis.filter(is_valid=True).filter(owner__isnull=False):
+            logger.debug("%s containing this character has an owner" % api)
+            users.add(api.owner)
+        logger.debug("Found %s possible owners for %s" % (len(users), self))
+        return list(users)
+
+    def assign_user(self):
+        users = self.get_possible_users()
+        if len(users) == 1:
+            logger.debug("%s is not contested and has one possible user" % self)
+            if self.user != users[0]:
+                logger.debug("Changing assigned user of %s from %s to %s" % (self, self.user, users[0]))
+                self.user = users[0]
+                self.save(update_fields=['user'])
+            else:
+                logger.debug("%s has correct user assigned" % self)
+        else:
+            if len(users) > 1:
+                logger.debug("%s is in a contested state with %s possible users: %s" % (self, len(users), users))
+            else:
+                logger.debug("No possible users found for %s" % self)
+            if self.user:
+                self.user = None
+                self.save(update_fields=['user'])
+
 class EVECorporation(models.Model):
+
     id = models.PositiveIntegerField(primary_key=True)
     name = models.CharField(max_length=254, null=True, blank=True)
     alliance_id = models.PositiveIntegerField(null=True, blank=True)
     alliance_name = models.CharField(max_length=254, null=True, blank=True)
     members = models.PositiveIntegerField(null=True, blank=True)
     ticker = models.CharField(max_length=254, null=True, blank=True)
-    standing = GenericRelation('eveonline.EVEStanding', null=True)
+
+    objects = EVECorporationManager()
+
     def __unicode__(self):
         if self.name:
             return self.name.encode('utf-8')
         else:
             logger.warn("Corp name missing in corp model for id %s - needs an update - returning id as __unicode__" % self.id)
             return str(self.id).encode('utf-8')
+
     def update(self, result=None):
         logger.debug("Updating corp info for corp id %s" % self.id)
         if not result:
@@ -112,8 +155,15 @@ class EVECorporation(models.Model):
             api = evelink.corp.Corp(a)
             try:
                 result = api.corporation_sheet(corp_id=self.id).result
+            except evelink.api.APIError as e:
+                if int(e.code) == 523:
+                    logger.info("%s has closed. Deleting model" % self)
+                    self.delete()
+                else:
+                    logger.exception("Error occured retrieving corporation sheet for id %s - aborting update." % self.id, exc_info=True)
+                    return False
             except:
-                logger.exception("Error occured retrieving corporation sheet for id %s - likely bad corp id. Aborting update." % self.id, exc_info=True)
+                logger.exception("Error occured retrieving corporation sheet for id %s - aborting update." % self.id, exc_info=True)
                 return False
         if (not 'name' in result) or (not 'alliance' in result) or (not 'members' in result) or (not 'ticker' in result):
             logger.error("Passed corp result missing required fields for corp id %s. Aborting update." % self.id)
@@ -144,53 +194,111 @@ class EVECorporation(models.Model):
         return True
 
 class EVEAlliance(models.Model):
+
     id = models.PositiveIntegerField(primary_key=True)
     name = models.CharField(max_length=254, null=True, blank=True)
     ticker = models.CharField(max_length=254, null=True, blank=True)
-    standing = GenericRelation('eveonline.EVEStanding', null=True)
+
+    objects = EVEAllianceManager()
+
     def __unicode__(self):
         if self.name:
             return self.name.encode('utf-8')
         else:
             logger.warn("Alliance name missing in alliance models for id %s - needs an update - returning id as __unicode__" % self.id)
             return str(self.id).encode('utf-8')
+
     def update(self, alliance_info=None):
         logger.debug("Updating alliance info for alliance id %s" % self.id)
         if not alliance_info:
-            logger.debug("Not passed API result. Grabbing from evelink")
-            api = evelink.eve.EVE()
-            result = api.alliances().result
-            if self.id in result:
-                alliance_info = result[self.id]
-            else:
-                logger.error("API result does not contain this alliance id %s. Aborting update." % self.id)
-                return False
+            logger.debug("Not passed API result. Grabbing from manager")
+            alliance_info = EVEAlliance.objects.get_info(self.id)
+        if alliance_info['corporationsCount'] == 0:
+            logger.info("%s has closed. Deleting model" % self)
+            self.delete()
         update_fields=[]
         if self.name != alliance_info['name']:
             self.name = alliance_info['name']
             update_fields.append('name')
-        if self.ticker != alliance_info['ticker']:
-            self.ticker = alliance_info['ticker']
-            update_fields.append('name')
+        if self.ticker != alliance_info['shortName']:
+            self.ticker = alliance_info['shortName']
+            update_fields.append('ticker')
         logger.info("Finished updating alliance info for id %s from api. Changed: %s" % (self.id, update_fields))
         if update_fields:
             self.save(update_fields=update_fields)
         return True
 
 class EVEApiKeyPair(models.Model):
+
+    TYPE_CHOICES = (
+        ('account', 'account'),
+        ('character', 'character'),
+        ('corp', 'corp'),
+        )
+
     id = models.PositiveIntegerField(primary_key=True)
     vcode = models.CharField(max_length=254)
-    owner = models.ForeignKey('authentication.User', null=True)
+    owner = models.ForeignKey('authentication.User', null=True, blank=True)
     is_valid = models.NullBooleanField(blank=True)
-    characters = models.ManyToManyField(EVECharacter, related_name ='apis')
+    access_mask = models.IntegerField(default=0, blank=True)
+    type = models.CharField(max_length=11, choices=TYPE_CHOICES, blank=True)
+    characters = models.ManyToManyField(EVECharacter, blank=True, related_name='apis')
+    corp = models.ForeignKey(EVECorporation, null=True, blank=True, related_name='apis')
+
+    objects = EVEApiKeyPairManager()
+
+    class Meta:
+        permissions = (("api_verified", "Main character has valid API."),)
+
     def __unicode__(self):
         return 'API Key %s' % self.id
+
+    def validate(self):
+        logger.debug("Checking if api id %s is valid." % id)
+        try:
+            api = evelink.api.API(api_key=(self.id, self.vcode))
+            account = evelink.account.Account(api=api)
+            info = account.key_info()
+            logger.debug("Verified api id %s is valid." % id)
+            return True
+        except evelink.api.APIError as e:
+            if int(e.code) == 403:
+                logger.debug("API id %s is invalid." % id)
+                return False
+            else:
+                raise e
+
+    def get_standings(self):
+        if self.contacts:
+            if self.type == 'corp':
+                try:
+                    logger.debug("Getting corp standings with api id %s" % id)
+                    api = evelink.api.API(api_key=(self.id, self.vcode))
+                    corp = evelink.corp.Corp(api=api)
+                    corpinfo = corp.contacts().result
+                    return corpinfo
+                except evelink.api.APIError as error:
+                    logger.exception("APIError occured while retrieving corp standings from api id %s" % id, exc_info=True)
+                    return {}
+            else:
+                raise NotImplementedError('Only corp keys are supported')
+        else:
+            raise AttributeError("%s lacks access mask 16 (ContactList)" % self)
+
     def update(self):
         chars = []
         logger.debug("Initiating update of %s" % self)
         try:
             api = evelink.api.API(api_key=(self.id, self.vcode))
             account = evelink.account.Account(api=api)
+            update_fields = []
+            key_info = account.key_info().result
+            if key_info['type'] != self.type:
+                self.type = key_info['type']
+                update_fields.append('type')
+            if key_info['access_mask'] != self.access_mask:
+                self.access_mask = key_info['access_mask']
+                update_fields.append('access_mask')
             api_chars = account.characters().result
             for char in self.characters.all():
                 if not char.id in api_chars:
@@ -202,31 +310,112 @@ class EVEApiKeyPair(models.Model):
                 if not char in self.characters.all():
                     logger.info("Character %s discovered on %s" % (char, self))
                     self.characters.add(char)
+            if self.type == 'corp':
+                for id in key_info['characters']:
+                    corp_id = key_info['characters'][id]['corp']['id']
+                    break
+                api_corp = evelink.corp.Corp(api=api).corporation_sheet(corp_id=corp_id).result
+                corp = EVECorporation.objects.get_by_id(corp_id)
+                if self.corp != corp:
+                    self.corp = corp
+                    update_fields.append('corp')
+            else:
+                if self.corp:
+                    self.corp = None
+                    update_fields.append('corp')
             if not self.is_valid:
                 self.is_valid=True
-                self.save(update_fields=['is_valid'])
-        except evelink.api.APIError as error:
-            logger.exception("APIError occured while retrieving characters for %s" % self, exc_info=True)
-            logger.info("%s is invalid." % self)
-            if self.is_valid or self.is_valid==None:
-                self.is_valid=False
-                self.save(update_fields=['is_valid'])
-            if self.characters.all().exists():
-                self.characters.clear()
-        
+                update_fields.append('is_valid')
+            if update_fields:
+                logger.info("%s updated %s" % (self, update_fields))
+                self.save(update_fields=update_fields)
+        except evelink.api.APIError as e:
+            if int(e.code) in [500, 520]:
+                logger.error("EVE API servers encountered an error. Unable to update %s" % self)
+            elif int(e.code) in [221]:
+                logger.error("API hiccup prevented updating %s" % self)
+            else:
+                logger.info("%s is invalid, error code %s" % (self, e.code))
+                update_fields = []
+                if self.is_valid or self.is_valid==None:
+                    self.is_valid=False
+                    update_fields.append('is_valid')
+                if self.characters.all().exists():
+                    for char in self.characters.all():
+                        self.characters.remove(char)
+                if self.corp:
+                    self.corp = None
+                    update_fields.append('corp')
+                if update_fields:
+                    logger.info("%s updated %s" % (self, update_fields))
+                    self.save(update_fields=update_fields)
 
-class EVEStanding(models.Model):
-    standing = models.DecimalField(max_digits=3, decimal_places=1, null=True)
-    object_id = models.PositiveIntegerField()
-    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
-    content_object = GenericForeignKey('content_type', 'object_id')
-    source_api = models.ForeignKey(EVEApiKeyPair, on_delete=models.CASCADE)
+class EVEContactSet(models.Model):
+    LEVEL_CHOICES = (
+        ('personal', 'character'),
+        ('corp', 'corporation'),
+        ('alliance', 'alliance'),
+    )
+
+    source_api = models.OneToOneField(EVEApiKeyPair, on_delete=models.CASCADE, limit_choices_to=EVEApiKeyPair.objects.get_contact_source_apis)
+    minimum_standing = models.IntegerField()
+    level = models.CharField(max_length=10, choices=LEVEL_CHOICES)
+
     def __unicode__(self):
-        output = "%s standing towards %s" % (self.standing, self.content_object)
+        output = "Standings above %s from %s" % (self.minimum_standing, self.source_api)
         return output.encode('utf-8')
+
+    def update(self):
+        logger.debug("Updating %s" % self)
+        all_contact_dict = self.source_api.get_standings()
+        contact_dict = {}
+        if self.level in all_contact_dict:
+            contact_dict = all_contact_dict[self.level]
+        contacts = self.contacts.all()
+        logger.debug("Got %s contacts from API and %s contact models" % (len(contact_dict), len(contacts)))
+        for contact in contacts:
+            if not contact.object_id in contact_dict:
+                logger.info("Contact with %s no longer found on %s" % (contact, self.source_api))
+                contact.delete()
+            elif contact_dict[contact.object_id]['standing'] < self.minimum_standing:
+                logger.info("Contact with %s no longer meets minimum requirements of %s" % (contact, self))
+                contact.delete()
+            else:
+                logger.debug("Contact %s still valid" % contact)
+        for id in contact_dict:
+            if contact_dict[id]['standing'] >= self.minimum_standing:
+                if not contacts.filter(object_id=id).exists():
+                    contact = EVEContact.objects.create_from_api(contact_dict[id], self)
+                    logger.info("Created contact with %s from %s" % (contact, self))
+        logger.debug("Updated contacts from %s" % self)
+
+
+class EVEContact(models.Model):
+
+    TYPE_CHOICES = (
+        ('alliance', 'alliance'),
+        ('corp', 'corp'),
+        ('character', 'character'),
+    )
+
+    standing = models.DecimalField(max_digits=3, decimal_places=1, null=True)
+    object_id = models.IntegerField()
+    object_name = models.CharField(max_length=254, blank=True, null=True)
+    type = models.CharField(max_length=10, choices=TYPE_CHOICES, blank=True, null=True)
+    contact_source = models.ForeignKey(EVEContactSet, on_delete=models.CASCADE, related_name='contacts')
+
+    class Meta:
+        unique_together = ('object_id', 'contact_source')
+
+    def __unicode__(self):
+        output = "%s standing towards %s (%s)" % (self.standing, self.object_name, self.object_id)
+        return output.encode('utf-8')
+
     def assign_object(self, object):
         if isinstance(object, EVECharacter) or isinstance(object, EVECorporation) or isinstance(object, EVEAlliance):
             self.object_id = object.pk
             self.content_object = object
         else:
             raise TypeError("Standing must be towards object of type EVECharacter, EVECorporation, EVEAlliance.")
+
+    objects = EVEContactManager()

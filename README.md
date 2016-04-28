@@ -1,48 +1,100 @@
 # adarnauth
-Yet another open-source auth system. But this one is new and shiny.
 
-The goal of this project is to overhaul [AllianceAuth](https://github.com/R4stl1n/allianceauth) - it's got more duct tape holding it together than my entire hangar of minmatar ships.
+[Live Demo](https://adarnauth.allianceauth.com)
+
+Started as a rewrite of the core of AllianceAuth but has ballooned to a standalone auth system.
 
 ## Project Outline
 
-- [x] EVE model creation and updating
-- [x] EVE SSO login integration
-- [x] User access right management
-- [x] Extended group model
-- [x] Front-end web design and views for groups, access, characters
-- [ ] LDAP
-  - [ ] LDAP Models
-  - [ ] Methods
-  - [ ] OU syncing
-  - [ ] Service DCs
-  - [ ] CN syncing
-  - [ ] Views
-- [x] ~~Service model~~
-- [ ] ~~Core service managers~~
-  - [x] ~~openfire~~
-  - [x] ~~phpbb~~
-  - [ ] ~~discord~~
-- [ ] ~~Front-end web design and views for services      <-- first release upon completion~~
-- [ ] Accessory functions: application, fleet fits, timerboard, etc
-- [ ] ~~More service managers: mumble, ts3, slack, ipboard3, etc~~
-- [ ] Documentation and Tests (ongoing)
+### EVE Models
 
-For the visual learners out there, here's an image of what the inital work on v2 is focused on. Stuff in the brown spraypain is being completely overhauled, the rest will be revamped (namely, services) or grafted on.
+ - [x] Character
+   - [x] Fetch from public API
+   - [x] Async update task
+   - [x] Determine owning user
+   - [x] Handle character deletion
+ - [x] Corp
+   - [x] Fetch from public API
+   - [x] Async update task
+   - [x] Handle corp closure
+ - [x] Alliance
+   - [x] Fetch from public API
+   - [x] Async update task
+   - [x] Handle alliance closure
+ - [x] API Key
+   - [x] Update from authorized API
+   - [x] Populate characters
+   - [x] Populate corp
+   - [x] API verified permission
+   - [x] Verify via SSO
+ - [x] Standings
+   - [x] Pull from authorized API
 
-![v2](https://camo.githubusercontent.com/f144a7ed9152ca1154a8622d4a55f8e49f79a010/687474703a2f2f692e696d6775722e636f6d2f554c79704841332e706e67)
+### Access Rules
 
-## What's this new LDAP nonsense?
+ - [x] Character
+   - [x] Auto-populate
+ - [x] Corp
+   - [x] Auto-populate
+ - [x] Alliance
+   - [x] Auto-populate
+ - [x] Standing
+   - [x] Auto-populate
+ - [x] Site access permission
 
-I've been debugging issues with mumble for 8 months now and it comes down to mumble not respecting database changes. Only way to get its attention is through the ICE interface, but this doesn't let you manage groups.
+### Groups
 
-The only other alternative is a custom authenticator which return a string of groups. For this I have two options:
+ - [x] Extend Group Model
+   - [x] Owner/Admin/Member tiers
+   - [x] Nesting (parent/child)
+ - [x] Auto Assignment
 
- 1. Write a custom authenticator for django
- 2. Piggyback on the existing LDAP authenticator
+### SSO
 
-Seeing as every service but TS3 (really people, why are you still using that crap?) supports LDAP authentication, I can enable every service out there which can use LDAP in one go.  
-SMF? Yes. Mediawiki? Yes. IPBoard? You got it. The list goes on.
+ - [x] Process SSO callback
+ - [x] Generate missing user accounts
+ - [ ] Owner hash matching
+ - [x] Internal redirect
+   - [x] Hash matching
+   - [x] Session identity verification
+   - [x] View redirect
+   - [ ] Auto-cleanup
 
-I know nothing of LDAP. So I'm pushing beta release back to March. Sorry. But it's worth it.
+### Explicit Service Support
 
-# Always looking for suggestions. Contact Adarnof in-game.
+ - [ ] Mumble
+   - [ ] Base service functions
+   - [ ] Group mapping
+   - [ ] Front-end creation
+   - [ ] Signals
+ - [ ] Openfire
+   - [x] Base service functions
+   - [ ] Broadcast
+   - [x] Group mapping
+   - [ ] Front-end creation
+   - [x] Signals
+ - [ ] Phpbb3
+   - [x] Base service functions
+   - [x] Group mapping
+   - [ ] Front-end creation
+   - [x] Signals
+ - [ ] Discord
+   - [ ] Base service functions
+   - [ ] Broadcast
+   - [ ] Group mapping
+   - [ ] Front-end creation
+   - [ ] Signals
+
+### App Admin Hardening
+Tolerate users pushing buttons on the admin site I might not like.
+
+ - [x] access
+ - [x] authentication
+ - [x] eveonline
+ - [x] groupmanagement
+ - [ ] ldap_service
+ - [ ] mumble
+ - [ ] openfire
+ - [ ] phpbb
+
+# Suggestions?

@@ -1,25 +1,30 @@
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.models import Group
 from authentication.models import User
-from .forms import GroupAddForm, GroupEditForm, GroupTransferForm
-from .models import GroupApplication, ExtendedGroup
+from forms import GroupAddForm, GroupEditForm, GroupTransferForm, AutoGroupForm
+from models import GroupApplication, ExtendedGroup, AutoGroup
+from access.models import CharacterAccessRule, CorpAccessRule, AllianceAccessRule
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth.decorators import login_required, permission_required, user_passes_test
 import logging
 
 logger = logging.getLogger(__name__)
 
 @login_required
-@permission_required('useraccess.site_access')
+@permission_required('access.site_access')
 def group_list(request):
     logger.debug("group_list_view called by user %s" % request.user)
     applications = GroupApplication.objects.get_open().filter(user=request.user)
     applied = [a.extended_group for a in applications]
-    owned = list(request.user.owned_groups.all())
-    admin = list(request.user.admin_groups.all())
+    owned = request.user.owned_groups.all()
+    admin = request.user.admin_groups.all()
+    auto = []
     user_groups = []
     for g in request.user.groups.all():
         if ExtendedGroup.objects.filter(group=g).exists():
             user_groups.append(ExtendedGroup.objects.get(group=g))
+        if AutoGroup.objects.filter(group=g).exists():
+            auto.append(AutoGroup.objects.get(group=g))
     all_groups = [g for g in list(ExtendedGroup.objects.all()) if g not in user_groups and g not in applied]
     logger.debug("User has groups %s" % user_groups)
     member = []
@@ -46,6 +51,7 @@ def group_list(request):
         'member': member,
         'applications': applications,
         'available': available,
+        'auto': auto,
     }
     return render(request, 'registered/groupmanagement/list.html', context=context)
 
@@ -55,9 +61,11 @@ def group_list_management(request):
     logger.debug("group_list_management called by user %s" % request.user)
     owned = list(request.user.owned_groups.all())
     admin = list(request.user.admin_groups.all())
+    auto = AutoGroup.objects.all()
     context = {
         'owned': owned,
         'admin': admin,
+        'auto': auto,
     }
     return render(request, 'registered/groupmanagement/list_management.html', context=context)
 
@@ -81,7 +89,7 @@ def group_application_create(request, group_id):
 @permission_required('access.site_access')
 @permission_required('groupmanagement.can_manage_groups')
 def group_application_accept(request, app_id):
-    logger.debug("group_application_accept called by user %s for app id %s" % (request.user, group_id))
+    logger.debug("group_application_accept called by user %s for app id %s" % (request.user, app_id))
     app = get_object_or_404(GroupApplication, id=app_id)
     if app.extended_group.owner == request.user or request.user in app.extended_group.admins.all():
         logger.info("User %s accepting %s" % (request.user, app))
@@ -94,7 +102,7 @@ def group_application_accept(request, app_id):
 @permission_required('access.site_access')
 @permission_required('groupmanagement.can_manage_groups')
 def group_application_reject(request, app_id):
-    logger.debug("group_application_reject called by user %s for app_id %s" % (request.user, group_id))
+    logger.debug("group_application_reject called by user %s for app_id %s" % (request.user, app_id))
     app = get_object_or_404(GroupApplication, id=app_id)
     if app.extended_group.owner == request.user or request.user in app.extended_group.admins.all():
         logger.info("User %s rejecting %s" % (request.user, app))
@@ -122,9 +130,8 @@ def group_application_delete(request, app_id):
 def group_create(request):
     logger.debug("group_create called by user %s" % request.user)
     choices = [(None, 'None'),]
-    for g in ExtendedGroup.objects.all():
-        if g.owner == request.user or request.user in g.admins.all():
-            choices.append((g.id, str(g)))
+    for g in ExtendedGroup.objects.get_parents_for_user(request.user):
+        choices.append((g.id, str(g)))
     if request.method == 'POST':
         form = GroupAddForm(request.POST)
         form.fields['parent'].choices = choices
@@ -142,18 +149,27 @@ def group_create(request):
             group, c = Group.objects.get_or_create(name=name)
             if c is False:
                 if ExtendedGroup.objects.filter(group=group).exists() is False:
-                    logger.warn("Associating orphaned group %s with new extended group created by %s" % (group, request.user))
+                    if AutoGroup.obkects.filter(group=group).exists() is False:
+                        logger.warn("Associating orphaned group %s with new extended group created by %s" % (group, request.user))
+                    else:
+                        logger.error("User %s attempting to create ExtendedGroup for %s" % (request.user, AutoGroup.objects.get(group=group)))
+                        return redirect('groupmanagement.views.group_list')
                 else:
                     logger.error("User %s attempting to create duplicate ExtendedGroup for %s" % (request.user, group))
                     return redirect('groupmanagement.views.group_list')
             e = ExtendedGroup(group=group, owner=request.user, description=desc, hidden=hidden, parent=parent, require_application=app)
             e.save()
             logger.info("User %s created group %s" % (request.user, e))
-        return redirect('groupmanagement_group_list_management')
+            return redirect('groupmanagement_group_list_management')
     else:
         form = GroupAddForm()
         form.fields['parent'].choices = choices
-    return render(request, 'registered/groupmanagement/create.html', context={'form':form})
+    context = {
+        'form': form,
+        'title': 'Create Group',
+        'button_text': 'Create',
+    }
+    return render(request, 'public/form.html', context=context)
 
 @login_required
 @permission_required('access.site_access')
@@ -176,23 +192,9 @@ def group_manage(request, group_id):
     logger.debug("group_manage called by user %s for group id %s" % (request.user, group_id))
     exgroup = get_object_or_404(ExtendedGroup, id=group_id)
     if exgroup.owner == request.user or request.user in exgroup.admins.all():
-        all_users = list(u for u in exgroup.group.user_set.all() if u != exgroup.owner and u not in list(exgroup.admins.all()))
-        members = []
-        for u in all_users:
-            can_admin = False
-            if u.has_perm('groupmanagement.can_manage_groups') and request.user == exgroup.owner:
-                can_admin = True
-            members.append((u, can_admin))
+        members = [(u, exgroup.can_promote_member(request.user, u)) for u in exgroup.basic_members]
         apps = GroupApplication.objects.filter(extended_group=exgroup).filter(response=None)
-        all_admins = list(exgroup.admins.all())
-        admins = []
-        for a in all_admins:
-            if request.user == exgroup.owner:
-                admins.append((a, True))
-            elif request.user == a:
-                admins.append((a, True))
-            else:
-                admins.append((a, False))
+        admins = [(a, exgroup.can_demote_admin(request.user, a)) for a in exgroup.admins.all()]
         context = {
             'group': exgroup,
             'members': members,
@@ -212,7 +214,7 @@ def group_promote_member(request, group_id, user_id):
     logger.debug("group_promote_member called by user %s for group id %s user id %s" % (request.user, group_id, user_id))
     exgroup = get_object_or_404(ExtendedGroup, id=group_id)
     member = get_object_or_404(User, pk=user_id)
-    if exgroup.owner == request.user:
+    if exgroup.can_promote_member(request.user, member):
         if member not in exgroup.admins.all():
             logger.info("User %s promoting %s to group %s admin" % (request.user, member, exgroup))
             exgroup.admins.add(member)
@@ -285,15 +287,23 @@ def group_edit(request, group_id):
                     logger.debug("Detected no changes between group %s and supplied form." % exgroup)
                 return redirect('groupmanagement_group_list_management')
         else:
+            parent = None
+            if exgroup.parent:
+                parent = exgroup.parent.id
             data = {
                 'description': exgroup.description,
                 'hidden': exgroup.hidden,
-                'parent': exgroup.parent,
+                'parent': parent,
                 'applications': exgroup.require_application,
             }
             form = GroupEditForm(initial=data)
             form.fields['parent'].choices = choices
-        return render(request, 'registered/groupmanagement/edit.html', context={'form':form})
+        context = {
+            'form': form,
+            'title': 'Edit Group',
+            'button_text': 'Edit',
+        }
+        return render(request, 'public/form.html', context=context)
     else:
         logger.warn("User %s not eligible to edit group %s" % (request.user, exgroup))
         return redirect('groupmanagement_group_list_management')
@@ -326,7 +336,12 @@ def group_transfer_ownership(request, group_id):
             if not exgroup.admins.all():
                 logger.warn("User %s unable to transfer ownership of %s - no admins found." % (request.user, exgroup))
                 return redirect('groupmanagement_group_list_management')
-        return render(request, 'registered/groupmanagement/transfer.html', context={'form':form})
+        context = {
+            'form': form,
+            'title': 'Transfer Ownership of %s' % exgroup,
+            'button_text': 'Transfer',
+        }
+        return render(request, 'public/form.html', context=context)
     else:
         logger.warn("User %s not eligible to transfer ownership of %s" % (request.user, exgroup))
         return redirect('groupmanagement_group_manage', group_id)
@@ -338,7 +353,7 @@ def group_remove_member(request, group_id, user_id):
     logger.debug("group_remove_member called by user %s for group id %s user id %s" % (request.user, group_id, user_id))
     exgroup = get_object_or_404(ExtendedGroup, id=group_id)
     member = get_object_or_404(User, pk=user_id)
-    if exgroup.owner == request.user or request.user in exgroup.admins.all():
+    if exgroup.can_remove_member(request.user, member):
         if exgroup.group in member.groups.all():
             if member != exgroup.owner and member not in exgroup.admins.all():
                 logger.info("User %s removing member %s from group %s" % (request.user, member, exgroup))
@@ -356,7 +371,7 @@ def group_remove_member(request, group_id, user_id):
 def group_leave(request, group_id):
     logger.debug("group_leave called by user %s for group id %s" % (request.user, group_id))
     exgroup = get_object_or_404(ExtendedGroup, id=group_id)
-    if exgroup.owner != request.user and request.user not in exgroup.admins.all():
+    if exgroup.can_leave_group(request.user):
         if exgroup.group in request.user.groups.all():
             logger.info("User %s leaving group %s" % (request.user, exgroup))
             request.user.groups.remove(exgroup.group)
@@ -365,3 +380,75 @@ def group_leave(request, group_id):
     else:
         logger.warn("User %s unable to leave group %s - is management." % (request.user, exgroup))
     return redirect('groupmanagement_group_list')
+
+@login_required
+@permission_required('access.site_access')
+@permission_required('groupmanagement.add_autogroup')
+def auto_group_add(request):
+    logger.debug("auto_group_add called by user %s" % request.user)
+    choices = []
+    for aa in AllianceAccessRule.objects.all():
+        if not aa.auto_group.exists():
+            choices.append(('alliance %s' % aa.pk, aa))
+    for ca in CorpAccessRule.objects.all():
+        if not ca.auto_group.exists():
+            choices.append(('corp %s' % ca.pk, ca))
+    for ca in CharacterAccessRule.objects.all():
+        if not ca.auto_group.exists():
+            choices.append(('character %s' % ca.pk, ca))
+    logger.debug(choices)
+    if request.method == 'POST':
+        form = AutoGroupForm(request.POST)
+        form.fields['access_rule'].choices = choices
+        if form.is_valid():
+            name = form.cleaned_data['name']
+            group, c = Group.objects.get_or_create(name=name)
+            if not c:
+                form.add_error(None, 'Somehow that group already exists. Pick a different name')
+            else:
+                access_str = str.split(str(form.cleaned_data['access_rule']))
+                type = access_str[0]
+                id = access_str[1]
+                rule = None
+                if type == "alliance":
+                    rule = get_object_or_404(AllianceAccessRule, pk=id)
+                elif type == "corp":
+                    rule = get_object_or_404(CorpAccessRule, pk=id)
+                elif type == "character":
+                    rule = get_object_or_404(CharacterAccessRule, pk=id)
+                else:
+                    form.add_error(None, 'Unknown access rule type.')
+                if rule:
+                    ag = AutoGroup(group=group)
+                    ag.set_rule(rule)
+                    logger.info("User %s creating %s" % (request.user, ag))
+                    ag.save()
+                    return redirect('groupmanagement_group_list_management')
+    else:
+        form = AutoGroupForm()
+        form.fields['access_rule'].choices = choices
+    context = {
+        'form': form,
+        'title': 'Create Auto Group',
+        'button_text': 'Create',
+    }
+    return render(request, 'public/form.html', context=context)
+
+@login_required
+@permission_required('access.site_access')
+@permission_required('groupmanagement.delete_autogroup')
+def auto_group_delete(request, ag_id):
+    logger.debug("auto_group_delete called by user %s for ag_id %s" % (request.user, ag_id))
+    ag = get_object_or_404(AutoGroup, pk=ag_id)
+    logger.info("User %s deleting %s" % (request.user, ag))
+    ag.delete()
+    return redirect('groupmanagement_group_list_management')
+
+@login_required
+@permission_required('access.site_access')
+@permission_required('groupmanagement.can_manage_groups')
+def auto_group_view(request, ag_id):
+    logger.debug("auto_group_view called by user %s for ag_id %s" % (request.user, ag_id))
+    ag = get_object_or_404(AutoGroup, pk=ag_id)
+    users = ag.group.user_set.all()
+    return render(request, 'registered/groupmanagement/group_member_list.html', context={'group': ag, 'users': users})

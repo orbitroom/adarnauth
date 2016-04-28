@@ -224,7 +224,7 @@ class Phpbb3Service(BaseServiceModel):
         logger.debug("Adding user %s to phpbb service %s with username %s" % (user, self, username))
         if not password:
             logger.debug("No password supplied. Generating random.")
-            password = self.__generate_random_pass()
+            password = self._generate_random_pass()
         self.__add_user(username, password)
         user_id = self.__get_user_id(username)
         if user_id:
@@ -248,7 +248,7 @@ class Phpbb3Service(BaseServiceModel):
         if Phpbb3User.objects.filter(user=user).filter(servive=self).exists():
             user_model = Phpbb3User.objects.get(user=user, service=service)
             if not password:
-                password = self.__generate_random_pass()
+                password = self._generate_random_pass()
             logger.info("Updating user %s password on phpbb service %s" % (user, self))
             self.__update_user_info(user_model.username, password)
         else:
@@ -340,10 +340,10 @@ class Phpbb3Group(models.Model):
 
 class Phpbb3User(models.Model):
     service = models.ForeignKey(Phpbb3Service, on_delete=models.CASCADE, editable=False)
-    user = models.OneToOneField(User, on_delete=models.CASCADE, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, editable=False)
     phpbb_user_id = models.PositiveIntegerField(editable=False)
     phpbb_username = models.CharField(max_length=254, editable=False)
-    phpbb_groups = models.ManyToManyField(Phpbb3Group, blank=True, null=True)
+    phpbb_groups = models.ManyToManyField(Phpbb3Group, blank=True)
 
     class Meta:
         unique_together = ("user", "service")
